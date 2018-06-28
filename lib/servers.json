@@ -1,0 +1,14 @@
+{
+    "server1.btbase.org": {
+        "pruning": "-",
+        "s": "8890",
+        "t": "8889",
+        "version": "1.2"
+    },
+    "server2.btbase.org": {
+        "pruning": "-",
+        "s": "8890",
+        "t": "8889",
+        "version": "1.2"
+    }
+}

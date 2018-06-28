@@ -1,0 +1,34 @@
+# Release 0.18.3
+ * fix OS X Sierra crash
+ * enable seed ext
+ * fix a race condition in synchronizer
+
+# Release 0.18.2
+ * fix a ledger osx connection issue
+ * decrease osx dmg size
+ * smart contract supported
+
+# Release 0.18.1
+ * fix a synchronization issue when detecting a fork
+ * fix ledger sending token issue
+
+# Release 0.18.0
+ * QRC20 Token supported
+ * Trezor supported
+
+# Release 0.17.5 : (Security update)
+ * The JSONRPC interface is password protected
+ * JSONRPC commands are disabled if the GUI is running, except 'ping', which is used to determine if a GUI is already running
+
+# Release v0.17.4
+  * fix ledger issue on windows
+
+# Release v0.17.3
+  * fix an issue with chain fork
+
+# Release v0.17.2
+  * support importing private master key for Btn Qt Core wallet
+
+# Release v0.17.1
+  * first beta release for Btn Electrum
+

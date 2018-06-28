@@ -1,0 +1,23 @@
+# If you want electrum to appear in a linux app launcher ("start menu"), install this by doing:
+# sudo desktop-file-install btn-electrum.desktop
+
+[Desktop Entry]
+Comment=Lightweight Btn Client
+Exec=sh -c "PATH=\"\\$HOME/.local/bin:\\$PATH\" btn-electrum %u"
+GenericName[en_US]=Btn Wallet
+GenericName=Btn Wallet
+Icon=electrum
+Name[en_US]=Electrum Btn Wallet
+Name=Electrum Btn Wallet
+Categories=Finance;Network;
+StartupNotify=false
+Terminal=false
+Type=Application
+MimeType=x-scheme-handler/btn;
+Actions=Testnet;
+
+[Desktop Action Testnet]
+Exec=sh -c "PATH=\"\\$HOME/.local/bin:\\$PATH\" btn-electrum --testnet %u"
+Name=Testnet mode
+
+

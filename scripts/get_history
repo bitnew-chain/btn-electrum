@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+
+import sys
+from btn_electrum import Network
+from btn_electrum.util import json_encode, print_msg
+from btn_electrum import btn
+
+try:
+    addr = sys.argv[1]
+except Exception:
+    print("usage: get_history <btn_address>")
+    sys.exit(1)
+
+n = Network()
+n.start()
+_hash = btn.address_to_scripthash(addr)
+h = n.synchronous_get(('blockchain.scripthash.get_history', [_hash]))
+print_msg(json_encode(h))
