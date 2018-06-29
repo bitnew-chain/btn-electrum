@@ -37,8 +37,8 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 
-from btn_electrum import keystore
-from btn_electrum.btn import COIN, is_address, TYPE_ADDRESS, TYPE_SCRIPT, TESTNET, is_hash160, eth_abi_encode
+from btn_electrum import keystore, constants, ecc
+from btn_electrum.btn import COIN, is_address, TYPE_ADDRESS, TYPE_SCRIPT, is_hash160, eth_abi_encode
 from btn_electrum.plugins import run_hook
 from btn_electrum.i18n import _
 from btn_electrum.util import (
@@ -142,13 +142,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.tokens_tab = self.create_tokens_tab()
         self.smart_contract_tab = self.create_smart_contract_tab()
 
-        tabs.addTab(self.create_history_tab(), QIcon(":icons/tab_history.png"),
-                    _('History'))
+        tabs.addTab(self.create_history_tab(), QIcon(":icons/tab_history.png"),_('History'))
         tabs.addTab(self.send_tab, QIcon(":icons/tab_send.png"), _('Send'))
-        tabs.addTab(self.receive_tab, QIcon(":icons/tab_receive.png"),
-                    _('Receive'))
-        tabs.addTab(self.tokens_tab, QIcon(":icons/tab_contacts.png"),
-                    _('Tokens'))
+        tabs.addTab(self.receive_tab, QIcon(":icons/tab_receive.png"),_('Receive'))
+        tabs.addTab(self.tokens_tab, QIcon(":icons/tab_contacts.png"),_('Tokens'))
 
         # tabs.addTab(self.contacts_tab, QIcon(":icons/tab_contacts.png"), _('Contacts'))
 
@@ -160,20 +157,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             if self.config.get('show_{}_tab'.format(name), False):
                 tabs.addTab(tab, icon, description.replace("&", ""))
 
-        add_optional_tab(tabs, self.addresses_tab,
-                         QIcon(":icons/tab_addresses.png"), _("&Addresses"),
-                         "addresses")
-        add_optional_tab(tabs, self.utxo_tab, QIcon(":icons/tab_coins.png"),
-                         _("Co&ins"), "utxo")
-        add_optional_tab(tabs,
-                         self.console_tab, QIcon(":icons/tab_console.png"),
-                         _("Con&sole"), "console")
-        add_optional_tab(tabs, self.contacts_tab,
-                         QIcon(":icons/tab_contracts.png"), _("Con&tacts"),
-                         "contacts")
-        add_optional_tab(tabs, self.smart_contract_tab,
-                         QIcon(":icons/tab_console.png"), _('Smart Contract'),
-                         'contract')
+        add_optional_tab(tabs, self.addresses_tab,QIcon(":icons/tab_addresses.png"), _("&Addresses"),"addresses")
+        add_optional_tab(tabs, self.utxo_tab, QIcon(":icons/tab_coins.png"),_("Co&ins"), "utxo")
+        add_optional_tab(tabs, self.console_tab, QIcon(":icons/tab_console.png"),_("Con&sole"), "console")
+        add_optional_tab(tabs, self.contacts_tab,QIcon(":icons/tab_contracts.png"), _("Con&tacts"),"contacts")
+        add_optional_tab(tabs, self.smart_contract_tab,QIcon(":icons/tab_console.png"), _('Smart Contract'),'contract')
 
         tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setCentralWidget(tabs)
@@ -257,6 +245,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
     def on_fx_token(self):
         self.token_balance_list.update()
+        self.token_hist_list.update()
 
     def toggle_tab(self, tab):
         show = not self.config.get('show_{}_tab'.format(tab.tab_name), False)
@@ -409,11 +398,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             self.wallet.electrum_version, self.wallet.basename())
         extra = [self.wallet.storage.get('wallet_type', '?')]
         if self.wallet.is_watching_only():
-            self.warn_if_watching_only()
+            #self.warn_if_watching_only()
             extra.append(_('watching only'))
         title += '  [%s]' % ', '.join(extra)
 
-        if TESTNET:
+        if constants.net.TESTNET:
             title += '  -  testnet'
 
         self.setWindowTitle(title)
@@ -659,12 +648,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
     def show_report_bug(self):
         msg = ' '.join([
-             _("Please report any bugs as issues on github:<br/>"),
-            "<a href=\"https://github.com/bitnew-chain/btn-electrum/issues\">https://github.com/bitnew-chain/btn-electrum/issues</a><br></br>",
+            _("Please report any bugs as issues on github:<br/>"),
+            "<a href=\"https://github.com/bitnew-chain/btn-electrum/issues\">https://github.com/bitnew-chain/btn-electrum/issues</a><br/><br/>",
             _("Before reporting a bug, upgrade to the most recent version of Electrum (latest release or git HEAD), and include the version number in your report."),
             _("Try to explain not only what the bug is, but how it occurs.")
          ])
-        self.show_message(msg, title="Btn Electrum - " + _("Reporting Bugs"))
+        self.show_message(msg, title="Electrum - " + _("Reporting Bugs"))
 
     def notify_transactions(self):
         if not self.network or not self.network.is_connected():
@@ -732,15 +721,17 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             self.require_fee_update = False
 
     def format_amount(self, x, is_diff=False, whitespaces=False):
-        return format_satoshis(x, is_diff, self.num_zeros, self.decimal_point,
-                               whitespaces)
+        return format_satoshis(x, self.num_zeros, self.decimal_point, is_diff=is_diff, whitespaces=whitespaces)
 
     def format_amount_and_units(self, amount):
         text = self.format_amount(amount) + ' ' + self.base_unit()
-        x = self.fx.format_amount_and_units(amount)
+        x = self.fx.format_amount_and_units(amount) if self.fx else None
         if text and x:
             text += ' (%s)' % x
         return text
+
+    def format_fee_rate(self, fee_rate):
+        return format_fee_satoshis(fee_rate/1000, self.num_zeros) + ' sat/byte'        
 
     def get_decimal_point(self):
         return self.decimal_point
@@ -780,9 +771,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                         window.update_fee()
                 else:
                     fiat_e.follows = True
-                    fiat_e.setText(
-                        self.fx.ccy_amount_str(amount * Decimal(rate) / COIN,
-                                               False))
+                    fiat_e.setText(self.fx.ccy_amount_str(
+                        amount * Decimal(rate) / COIN, False))
                     fiat_e.setStyleSheet(BLUE_FG)
                     fiat_e.follows = False
 
@@ -853,6 +843,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.utxo_list.update()
         self.contact_list.update()
         self.token_balance_list.update()
+        self.token_hist_list.update()
         self.smart_contract_list.update()
         self.invoice_list.update()
         self.update_completions()
@@ -2203,7 +2194,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         try:
             # This can throw on invalid base64
             sig = base64.b64decode(str(signature.toPlainText()))
-            verified = bitcoin.verify_message(address, sig, message)
+            verified = ecc.verify_message(address, sig, message)
         except Exception as e:
             verified = False
         if verified:
@@ -2266,7 +2257,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         message = message_e.toPlainText()
         message = message.encode('utf-8')
         try:
-            encrypted = bitcoin.encrypt_message(message, pubkey_e.text())
+            public_key = ecc.ECPubkey(bfh(pubkey_e.text()))
+            encrypted = public_key.encrypt_message(message)
             encrypted_e.setText(encrypted.decode('ascii'))
         except BaseException as e:
             traceback.print_exc(file=sys.stdout)
@@ -3339,6 +3331,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.show_transaction(new_tx, tx_label)
 
     def save_transaction_into_wallet(self, tx):
+        win = self.top_level_window()
         try:
             if not self.wallet.add_transaction(tx.txid(), tx):
                 self.show_error(
@@ -3346,20 +3339,27 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                     _("It conflicts with current history."))
                 return False
         except AddTransactionException as e:
-            self.show_error(e)
+            win.show_error(e)
             return False
         else:
             self.wallet.save_transactions(write=True)
             # need to update at least: history_list, utxo_list, address_list
             self.need_update.set()
-            self.show_message(_("Transaction saved successfully"))
+            msg = (_("Transaction added to wallet history.") + '\n\n' +
+                   _("Note: this is an offline transaction, if you want the network "
+                     "to see it, you need to broadcast it."))
+            win.msg_box(QPixmap(":icons/offline_tx.png"), None, _('Success'), msg)
             return True
 
     def create_tokens_tab(self):
-        from .token_list import TokenBalanceList
+        from .token_list import TokenBalanceList, TokenHistoryList
         self.token_balance_list = tbl = TokenBalanceList(self)
-        tbl.searchable_list = tbl
-        return self.create_list_tab(tbl, tbl.create_toolbar(visible=False))
+        self.token_hist_list = thl = TokenHistoryList(self)
+        splitter = QSplitter(self)
+        splitter.addWidget(tbl)
+        splitter.addWidget(thl)
+        splitter.setOrientation(Qt.Vertical)
+        return splitter
 
     def set_token(self, token):
         """
@@ -3368,14 +3368,16 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         """
         self.wallet.add_token(token)
         self.token_balance_list.update()
+        self.token_hist_list.update()
 
     def delete_token(self, key):
         if not self.question(
                 _("Remove {} from your list of tokens?".format(
                     self.tokens[key].name))):
             return False
-        self.tokens.pop(key)
+        self.wallet.delete_token(key)
         self.token_balance_list.update()
+        self.token_hist_list.update()
 
     def token_add_dialog(self):
         d = TokenAddDialog(self)
@@ -3395,21 +3397,14 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         d = TokenSendDialog(self, token)
         d.show()
 
-    def do_token_pay(self, token, pay_to, amount, gas_limit, gas_price,
-                     dialog):
+    def do_token_pay(self, token, pay_to, amount, gas_limit, gas_price, dialog):
         try:
             datahex = 'a9059cbb{}{:064x}'.format(pay_to.zfill(64), amount)
-            script = contract_script(gas_limit, gas_price, datahex,
-                                     token.contract_addr, opcodes.OP_CALL)
-            outputs = [
-                (TYPE_SCRIPT, script, 0),
-            ]
-            tx_desc = 'pay out {} {}'.format(amount / (10**token.decimals),
-                                             token.symbol)
-            self._smart_contract_broadcast(outputs, tx_desc,
-                                           gas_limit * gas_price,
-                                           token.bind_addr, dialog)
-        except (BaseException, ) as e:
+            script = contract_script(gas_limit, gas_price, datahex, token.contract_addr, opcodes.OP_CALL)
+            outputs = [(TYPE_SCRIPT, script, 0), ]
+            tx_desc = 'pay out {} {}'.format(amount / (10 ** token.decimals), token.symbol)
+            self._smart_contract_broadcast(outputs, tx_desc, gas_limit * gas_price, token.bind_addr, dialog)
+        except (BaseException,) as e:
             traceback.print_exc(file=sys.stderr)
             dialog.show_message(str(e))
 

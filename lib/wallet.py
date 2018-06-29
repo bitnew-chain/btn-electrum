@@ -25,19 +25,22 @@
 #   - Imported_Wallet: imported address, no keystore
 #   - Standard_Wallet: one keystore, P2PKH
 #   - Multisig_Wallet: several keystores, P2SH
-
+import os
 import threading
 import random
 import time
 import copy
 import errno
+import json
 from collections import defaultdict
 import traceback
 import sys
 import itertools
+from operator import itemgetter
+from functools import reduce
 
 from .i18n import _
-from .util import NotEnoughFunds, PrintError, UserCancelled, profiler, format_satoshis, timestamp_to_datetime
+from .util import NotEnoughFunds, PrintError, UserCancelled, profiler, format_satoshis, InvalidPassword
 from .btn import *
 from .version import *
 from .keystore import load_keystore, Hardware_KeyStore
@@ -109,7 +112,7 @@ def append_utxos_to_inputs(inputs, network, pubkey, txin_type, imax):
 def sweep_preparations(privkeys, network, imax=100):
 
     def find_utxos_for_privkey(txin_type, privkey, compressed):
-        pubkey = bitcoin.public_key_from_private_key(privkey, compressed)
+        pubkey = ecc.ECPrivkey(privkey).get_public_key_hex(compressed=compressed)
         append_utxos_to_inputs(inputs, network, pubkey, txin_type, imax)
         keypairs[pubkey] = privkey, compressed
     inputs = []
@@ -189,16 +192,25 @@ class Abstract_Wallet(PrintError):
         # locks: if you need to take multiple ones, acquire them in the order they are defined here!
         self.lock = threading.RLock()
         self.transaction_lock = threading.RLock()
+        self.token_lock = threading.RLock()        
 
         # saved fields
         self.use_change            = storage.get('use_change', True)
         self.multiple_change       = storage.get('multiple_change', False)
         self.labels                = storage.get('labels', {})
         self.frozen_addresses = set(storage.get('frozen_addresses', []))
-        self.history = storage.get('addr_history', {})  # address -> list(txid, height)
+        # address -> list(txid, height)
+        self.history = storage.get('addr_history', {})
+
+        # Token
+        self.tokens = Tokens(self.storage)
+        # contract_addr + '_' + b58addr -> list(txid, height, log_index)
+        self.token_history = storage.get('addr_token_history', {})
+        # txid -> tx receipt
+        self.tx_receipt = storage.get('tx_receipt', {})
         self.receive_requests = storage.get('payment_requests', {})
 
-        # Verified transactions.  Each value is a (height, timestamp, block_pos) tuple.  Access with self.lock.
+        # Verified transactions.  txid -> (height, timestamp, block_pos).  Access with self.lock.
         self.verified_tx = storage.get('verified_tx3', {})
 
         # Transactions pending verification.  A map from tx hash to transaction
@@ -209,15 +221,18 @@ class Abstract_Wallet(PrintError):
         self.load_addresses()
         self.test_addresses_sanity()
         self.load_transactions()
-        self.check_history()
-        self.load_unverified_transactions()
         self.load_local_history()
+        self.load_token_txs()
         self.build_spent_outpoints()
+        self.check_history()
+        self.check_token_history()
+        self.load_unverified_transactions()
         self.remove_local_transactions_we_dont_have()
 
-        # there is a difference between wallet.up_to_date and interface.is_up_to_date()
-        # interface.is_up_to_date() returns true when all requests have been answered and processed
+        # There is a difference between wallet.up_to_date and network.is_up_to_date().
+        # network.is_up_to_date() returns true when all requests have been answered and processed
         # wallet.up_to_date is true when the wallet is synchronized (stronger requirement)
+        # Neither of them considers the verifier.
         self.up_to_date = False
 
         # save wallet type the first time
@@ -227,7 +242,6 @@ class Abstract_Wallet(PrintError):
         self.invoices = InvoiceStore(self.storage)
         self.contacts = Contacts(self.storage)
         self.smart_contracts = SmartContracts(self.storage)
-        self.tokens = Tokens(self.storage)
 
     def diagnostic_name(self):
         return self.basename()
@@ -268,9 +282,9 @@ class Abstract_Wallet(PrintError):
 
     @profiler
     def save_transactions(self, write=False):
-        with self.transaction_lock:
+        with self.transaction_lock, self.token_lock:
             tx = {}
-            for k,v in self.transactions.items():
+            for k, v in self.transactions.items():
                 tx[k] = str(v)
             self.storage.put('transactions', tx)
             self.storage.put('txi', self.txi)
@@ -278,12 +292,25 @@ class Abstract_Wallet(PrintError):
             self.storage.put('tx_fees', self.tx_fees)
             self.storage.put('pruned_txo', self.pruned_txo)
             self.storage.put('addr_history', self.history)
+            self.storage.put('addr_token_history', self.token_history)
+            self.storage.put('tx_receipt', self.tx_receipt)
+
+            token_txs = {}
+            for txid, tx in self.token_txs.items():
+                token_txs[txid] = str(tx)
+            self.storage.put('token_txs', token_txs)
+            if write:
+                self.storage.write()
+
+    def save_verified_tx(self, write=False):
+        with self.lock:
+            self.storage.put('verified_tx3', self.verified_tx)
             if write:
                 self.storage.write()
 
     def clear_history(self):
         with self.lock:
-            with self.transaction_lock:
+            with self.transaction_lock, self.token_lock:
                 self.txi = {}
                 self.txo = {}
                 self.tx_fees = {}
@@ -292,6 +319,9 @@ class Abstract_Wallet(PrintError):
                 self.history = {}
                 self.verified_tx = {}
                 self.transactions = {}
+                self.token_history = {}
+                self.tx_receipt = {}
+                self.token_txs = {}                
                 self.save_transactions()
 
     @profiler
@@ -315,7 +345,7 @@ class Abstract_Wallet(PrintError):
             hist = self.history[addr]
 
             for tx_hash, tx_height in hist:
-                if tx_hash in self.pruned_txo.values() or self.txi.get(tx_hash) or self.txo.get(tx_hash):
+                if tx_hash in self.pruned_txo.values():
                     continue
                 tx = self.transactions.get(tx_hash)
                 if tx is not None:
@@ -353,6 +383,10 @@ class Abstract_Wallet(PrintError):
             self.up_to_date = up_to_date
         if up_to_date:
             self.save_transactions(write=True)
+            # if the verifier is also up to date, persist that too;
+            # otherwise it will persist its results when it finishes
+            if self.verifier and self.verifier.is_up_to_date():
+                self.save_verified_tx(write=True)            
 
     def is_up_to_date(self):
         with self.lock: return self.up_to_date
@@ -409,18 +443,20 @@ class Abstract_Wallet(PrintError):
             traceback.print_exc(file=sys.stderr)
         if tx_height in (TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT) \
                 and tx_hash in self.verified_tx:
-            self.verified_tx.pop(tx_hash)
+            with self.lock:
+                self.verified_tx.pop(tx_hash)
             if self.verifier:
-                self.verifier.merkle_roots.pop(tx_hash, None)
+                self.verifier.remove_spv_proof_for_tx(tx_hash)
 
         # tx will be verified only if height > 0
         if tx_hash not in self.verified_tx:
-            self.unverified_tx[tx_hash] = tx_height
+            with self.lock:
+                  self.unverified_tx[tx_hash] = tx_height
 
     def add_verified_tx(self, tx_hash, info):
         # Remove from the unverified map and add to the verified map and
-        self.unverified_tx.pop(tx_hash, None)
         with self.lock:
+            self.unverified_tx.pop(tx_hash, None)
             self.verified_tx[tx_hash] = info  # (tx_height, timestamp, pos)
         height, conf, timestamp = self.get_tx_height(tx_hash)
         if isinstance(height, tuple):
@@ -430,8 +466,9 @@ class Abstract_Wallet(PrintError):
 
     def get_unverified_txs(self):
         '''Returns a map from tx hash to transaction height'''
-        return self.unverified_tx
-
+        with self.lock:
+            return dict(self.unverified_tx)  # copy
+            
     def undo_verifications(self, blockchain, height):
         '''Used by the verifier when a reorg has happened'''
         txs = set()
@@ -954,7 +991,7 @@ class Abstract_Wallet(PrintError):
                     # make tx local
                     self.unverified_tx.pop(tx_hash, None)
                     self.verified_tx.pop(tx_hash, None)
-                    self.verifier.merkle_roots.pop(tx_hash, None)
+                    self.verifier.remove_spv_proof_for_tx(tx_hash)
                     # but remove completely if not is_mine
                     if self.txi[tx_hash] == {}:
                         # FIXME the test here should be for "not all is_mine"; cannot detect conflict in some cases
@@ -1053,7 +1090,9 @@ class Abstract_Wallet(PrintError):
         is_mined = False
         try:
             tx = self.transactions.get(tx_hash)
-            is_mined = tx.inputs()[0]['type'] == 'coinbase' or tx.outputs()[0][0] == 'coinstake'
+            if not tx:
+                tx = self.token_txs.get(tx_hash)
+            is_mined = tx.outputs()[0][0] == 'coinstake'
         except (BaseException,) as e:
             print_error('get_tx_status', e)
         if conf == 0:
@@ -1200,6 +1239,11 @@ class Abstract_Wallet(PrintError):
                 # add it in case it was previously unconfirmed
                 self.add_unverified_tx(tx_hash, tx_height)
 
+        # review transactions that are in the token history
+        for key, token_hist in self.token_history.items():
+            for txid, height, log_index in token_hist:
+                self.add_unverified_tx(txid, height)                
+
     def start_threads(self, network):
         self.network = network
         if self.network is not None:
@@ -1220,7 +1264,7 @@ class Abstract_Wallet(PrintError):
             # remain so they will be GC-ed
             self.storage.put('stored_height', self.get_local_height())
         self.save_transactions()
-        self.storage.put('verified_tx3', self.verified_tx)
+        self.save_verified_tx()
         self.storage.write()
 
     def wait_until_synchronized(self, callback=None):
@@ -1675,6 +1719,116 @@ class Abstract_Wallet(PrintError):
                     children |= self.get_depending_transactions(other_hash)
         return children
 
+    @profiler
+    def check_token_history(self):
+        # remove not mine and not subscribe token history
+        save = False
+        hist_keys_not_mine = list(filter(lambda k: not self.is_mine(k.split('_')[1]), self.token_history.keys()))
+        hist_keys_not_subscribe = list(filter(lambda k: k not in self.tokens, self.token_history.keys()))
+        for key in set(hist_keys_not_mine).union(hist_keys_not_subscribe):
+            hist = self.token_history.pop(key)
+            for txid, height, log_index in hist:
+                self.token_txs.pop(txid)
+            save = True
+        if save:
+            self.save_transactions()
+
+    @profiler
+    def load_token_txs(self):
+        token_tx_list = self.storage.get('token_txs', {})
+        # token_hist_txids = reduce(lambda x, y: x+y, list([[y[0] for y in x] for x in self.token_history.values()]))
+        if self.token_history:
+            token_hist_txids = [x2[0] for x2 in reduce(lambda x1, y1: x1+y1, self.token_history.values())]
+        else:
+            token_hist_txids = []
+        self.token_txs = {}
+        for tx_hash, raw in token_tx_list.items():
+            if tx_hash in token_hist_txids:
+                tx = Transaction(raw)
+                self.token_txs[tx_hash] = tx
+
+    def receive_token_history_callback(self, key, hist):
+        with self.token_lock:
+            self.token_history[key] = hist
+
+    def receive_tx_receipt_callback(self, tx_hash, tx_receipt):
+        self.add_tx_receipt(tx_hash, tx_receipt)
+
+    def receive_token_tx_callback(self, tx_hash, tx, tx_height):
+        self.add_token_transaction(tx_hash, tx)
+        self.add_unverified_tx(tx_hash, tx_height)
+
+    def add_tx_receipt(self, tx_hash, tx_receipt):
+        assert tx_hash, 'none tx_hash'
+        assert tx_receipt, 'empty tx_receipt'
+        for contract_call in tx_receipt:
+            if not contract_call.get('transactionHash') == tx_hash:
+                return
+            if not contract_call.get('log'):
+                return
+        with self.token_lock:
+            self.tx_receipt[tx_hash] = tx_receipt
+
+    def add_token_transaction(self, tx_hash, tx):
+        with self.token_lock:
+            assert tx.is_complete(), 'incomplete tx'
+            self.token_txs[tx_hash] = tx
+            return True
+
+    def delete_token(self, key):
+        with self.token_lock:
+            if key in self.tokens:
+                self.tokens.pop(key)
+            if key in self.token_history:
+                self.token_history.pop(key)
+
+    def get_token_history(self, contract_addr=None, bind_addr=None, from_timestamp=None, to_timestamp=None):
+        with self.lock, self.token_lock:
+            h = []  # from, to, amount, token, txid, height, conf, timestamp, call_index, log_index
+            keys = []
+            for token_key in self.tokens.keys():
+                if contract_addr and contract_addr in token_key \
+                        or bind_addr and bind_addr in token_key \
+                        or not bind_addr and not contract_addr:
+                    keys.append(token_key)
+            for key in keys:
+                contract_addr, bind_addr = key.split('_')
+                for txid, height, log_index in self.token_history.get(key, []):
+                    height, conf, timestamp = self.get_tx_height(txid)
+                    for call_index, contract_call in enumerate(self.tx_receipt.get(txid, [])):
+                        logs = contract_call.get('log', [])
+                        if len(logs) > log_index:
+                            log = logs[log_index]
+
+                            # check contarct address
+                            if contract_addr != log.get('address', ''):
+                                print('contract address mismatch')
+                                continue
+
+                            # check topic name
+                            topics = log.get('topics', [])
+                            if len(topics) < 3:
+                                print('not enough topics')
+                                continue
+                            if topics[0] != TOKEN_TRANSFER_TOPIC:
+                                print('topic mismatch')
+                                continue
+
+                            # check user bind address
+                            _, hash160b = b58_address_to_hash160(bind_addr)
+                            hash160 = bh2u(hash160b).zfill(64)
+                            if hash160 not in topics:
+                                print('address mismatch')
+                                continue
+                            amount = int(log.get('data'), 16)
+                            from_addr = topics[1][-40:]
+                            to_addr = topics[2][-40:]
+                            h.append(
+                                (from_addr, to_addr, amount, self.tokens[key], txid,
+                                 height, conf, timestamp, call_index, log_index))
+                        else:
+                            continue
+            return sorted(h, key=itemgetter(5, 8, 9), reverse=True)
 
 class Simple_Wallet(Abstract_Wallet):
     # wallet with a single keystore
@@ -1800,7 +1954,7 @@ class Imported_Wallet(Simple_Wallet):
                 self.transactions.pop(tx_hash, None)
                 # FIXME: what about pruned_txo?
 
-        self.storage.put('verified_tx3', self.verified_tx)
+            self.storage.put('verified_tx3', self.verified_tx)
         self.save_transactions()
 
         self.set_label(address, None)

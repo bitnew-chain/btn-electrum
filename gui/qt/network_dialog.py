@@ -29,7 +29,7 @@ import PyQt5.QtCore as QtCore
 from PyQt5.QtWidgets import *
 
 from btn_electrum.i18n import _
-from btn_electrum.network import DEFAULT_PORTS
+from btn_electrum.network import constants
 from btn_electrum.util import print_error
 from btn_electrum.network import serialize_server, deserialize_server
 
@@ -403,7 +403,7 @@ class NetworkChoiceLayout(object):
     def change_protocol(self, use_ssl):
         p = 's' if use_ssl else 't'
         host = self.server_host.text()
-        pp = self.servers.get(host, DEFAULT_PORTS)
+        pp = self.servers.get(host, constants.net.DEFAULT_PORTS)
         if p not in pp.keys():
             p = list(pp.keys())[0]
         port = pp[p]
@@ -428,7 +428,7 @@ class NetworkChoiceLayout(object):
             self.change_server(str(x.text(0)), self.protocol)
 
     def change_server(self, host, protocol):
-        pp = self.servers.get(host, DEFAULT_PORTS)
+        pp = self.servers.get(host, constants.net.DEFAULT_PORTS)
         if protocol and protocol not in protocol_letters:
             protocol = None
         if protocol:

@@ -34,6 +34,7 @@ import threading
 import hmac
 from struct import Struct
 import webbrowser
+import stat
 
 from .i18n import _
 
@@ -376,20 +377,18 @@ def format_satoshis_plain(x, decimal_point = 8):
     return "{:.8f}".format(Decimal(x) / scale_factor).rstrip('0').rstrip('.')
 
 
-def format_satoshis(x, is_diff=False, num_zeros = 0, decimal_point = 8, whitespaces=False):
+def format_satoshis(x, num_zeros=0, decimal_point=8, precision=None, is_diff=False, whitespaces=False):
     from locale import localeconv
     if x is None:
         return 'unknown'
-    x = int(x)  # Some callers pass Decimal
-    scale_factor = pow (10, decimal_point)
-    integer_part = "{:d}".format(int(abs(x) / scale_factor))
-    if x < 0:
-        integer_part = '-' + integer_part
-    elif is_diff:
-        integer_part = '+' + integer_part
+    if precision is None:
+        precision = decimal_point
+    decimal_format = ".0" + str(precision) if precision > 0 else ""
+    if is_diff:
+        decimal_format = '+' + decimal_format
+    result = ("{:" + decimal_format + "f}").format(x / pow (10, decimal_point)).rstrip('0')
+    integer_part, fract_part = result.split(".")
     dp = localeconv()['decimal_point']
-    fract_part = ("{:0" + str(decimal_point) + "}").format(abs(x) % scale_factor)
-    fract_part = fract_part.rstrip('0')
     if len(fract_part) < num_zeros:
         fract_part += "0" * (num_zeros - len(fract_part))
     result = integer_part + dp + fract_part
@@ -397,6 +396,14 @@ def format_satoshis(x, is_diff=False, num_zeros = 0, decimal_point = 8, whitespa
         result += " " * (decimal_point - len(fract_part))
         result = " " * (15 - len(result)) + result
     return result
+
+
+FEERATE_PRECISION = 1  # num fractional decimal places for sat/byte fee rates
+_feerate_quanta = Decimal(10) ** (-FEERATE_PRECISION)
+
+
+def format_fee_satoshis(fee, num_zeros=0):
+    return format_satoshis(fee, num_zeros, 0, precision=FEERATE_PRECISION)
 
 
 def timestamp_to_datetime(timestamp):
@@ -467,11 +474,12 @@ def time_difference(distance_in_time, include_seconds):
 
 
 def block_explorer_info():
-    from . import btn
-    if btn.TESTNET:
-        return btn.testnet_block_explorers
+    from . import constants
+    from .btn import testnet_block_explorers, mainnet_block_explorers    
+    if constants.net.TESTNET:
+        return testnet_block_explorers
     else:
-        return btn.mainnet_block_explorers
+        return mainnet_block_explorers
 
 
 def block_explorer(config):
@@ -758,3 +766,11 @@ def open_browser(url, new=0, autoraise=True):
         if browser.open(url, new, autoraise):
             return True
     return False
+
+def make_dir(path, allow_symlink=True):
+    """Make directory if it does not yet exist."""
+    if not os.path.exists(path):
+        if not allow_symlink and os.path.islink(path):
+            raise Exception('Dangling link: ' + path)
+        os.mkdir(path)
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)

@@ -7,6 +7,7 @@ __author__ = 'CodeFace'
 from collections import namedtuple
 from .storage import ModelStorage
 from . import btn
+from . import constants
 
 Token = namedtuple('Token', 'contract_addr bind_addr name symbol decimals balance')
 
@@ -56,7 +57,7 @@ class Tokens(ModelStorage):
                 continue
 
             addr_type, __ = btn.b58_address_to_hash160(bind_addr)
-            if not addr_type == btn.ADDRTYPE_P2PKH:
+            if not addr_type == constants.net.ADDRTYPE_P2PKH:
                 data.pop(k)
                 continue
 

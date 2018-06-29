@@ -1,11 +1,30 @@
 {
-    "server1.btbase.org": {
+    "127.0.0.1": {
+        "server1.btn.org": {
         "pruning": "-",
         "s": "8890",
         "t": "8889",
         "version": "1.2"
     },
-    "server2.btbase.org": {
+    "server1.btn.org": {
+        "pruning": "-",
+        "s": "8890",
+        "t": "8889",
+        "version": "1.2"
+    },
+    "server2.btn.org": {
+        "pruning": "-",
+        "s": "8890",
+        "t": "8889",
+        "version": "1.2"
+    },
+    "server3.btn.org": {
+        "pruning": "-",
+        "s": "8890",
+        "t": "8889",
+        "version": "1.2"
+    },
+    "server4.btn.org": {
         "pruning": "-",
         "s": "8890",
         "t": "8889",
