@@ -1,7 +1,7 @@
 btchip-python==0.1.26
 Cython==0.28.1
 cffi==1.11.5
-certifi==2018.1.18
+certifi==2022.12.7
 chardet==3.0.4
 dnspython==1.15.0
 ecdsa==0.13
